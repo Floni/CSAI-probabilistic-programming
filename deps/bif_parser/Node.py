@@ -80,7 +80,16 @@ class Node:
     
     #Set the Probability Distribution of this node
     def setDist(self, distribution):
-        self.dist = distribution
+        self.dist = {}
+
+        for key in distribution:
+            if type(key[0]) is tuple:
+                for i, state in enumerate(key[0]):
+                    self.dist[(state,) + key[1]] = distribution[key][i]
+            else:
+                for i, state in enumerate(key):
+                    self.dist[(state,)] = distribution[key][i] 
+       
         #If this is a root value, set the distribution to be the marginal
         if self.isRoot():
             self.marginal = {}
