@@ -1,4 +1,5 @@
 import sys
+import itertools
 
 from deps.bif_parser import BIFParser as BIFP
 
@@ -23,6 +24,37 @@ def main():
     print(">bif info:")
     for n in nodes:
         n.printNode()
+
+    # create variables
+    # map from name to int?
+    variables = {}
+    nvars = 0
+    for node in nodes:
+        name = node.getName()
+        states = node.getStates()
+        # each state gets one variable
+        svars = [name + '.v.' + s for s in states]
+
+        parents = node.getParents()
+        # per state and state of each parent -> one variable
+        cond_list = [states]
+        for parent in parents:
+            cond_list.append(parent.getStates())
+
+        pairs = itertools.product(*cond_list)
+        pvars = [name + '.cv.' + '|'.join(p) for p in pairs]
+
+        for v in svars + pvars:
+            variables[v] = nvars
+            nvars += 1
+    
+    print("variables:")
+    for v in variables:
+        print(v, "=", variables[v])
+
+    # create cnf
+    # assign weights
+    # save cnf
 
     return 0
 
