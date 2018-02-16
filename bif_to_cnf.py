@@ -196,7 +196,7 @@ def weights_to_str(weights, variables, enc1, c2d):
             weight = weights[var]
             ws[variables[var]] = (weight, 1 if enc1 else (1 - weight))
         else:
-            ws[variables[var]] = (1 if c2d else -1, 1)
+            ws[variables[var]] = (1, 1)
 
     wline = ""
     if c2d:
@@ -206,7 +206,7 @@ def weights_to_str(weights, variables, enc1, c2d):
         wline += '\n'
     else:
         for i in range(len(variables)):
-            wline += "w " + str(i+1) + " " + str(ws[i+1][0]) + "\n"
+            wline += "w " + str(i+1) + " " + str(ws[i+1][0]) + " " + str(ws[i+1][1]) +  "\n"
     return wline
 
 def main():

@@ -1,0 +1,23 @@
+network unknown {
+}
+variable Burglary {
+  type discrete [ 2 ] { True, False };
+}
+variable EarthQuake {
+  type discrete [ 2 ] { True, False };
+}
+variable Alarm {
+  type discrete [ 2 ] { True, False };
+}
+probability ( Burglary ) {
+  table 0.7, 0.3;
+}
+probability ( EarthQuake ) {
+  table 0.2, 0.8;
+}
+probability ( Alarm | Burglary, EarthQuake ) {
+  (False, False) 0.0, 1.0;
+  (False, True) 0.1, 0.9;
+  (True, False) 0.8, 0.2;
+  (True, True) 0.9, 0.1;
+}
