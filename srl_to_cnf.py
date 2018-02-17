@@ -16,11 +16,16 @@ def main():
     cnf_file_name = args.cnf_file
 
     grounded = subprocess.Popen(['problog', 'ground', pl_file_name],stdout=subprocess.PIPE)
+    grounded_str = grounded.stdout.read().decode()
 
-    for line in grounded.stdout:
-        linestr = line.decode().rstrip()
-        print(linestr)
+    factory = problog.program.PrologFactory()
+    parser = problog.parser.PrologParser(factory)
+    parsed = parser.parseString(grounded_str)
 
+    for clause in parsed:
+        print(type(clause))
+        print(clause)
+        print()
 
     return 0
 
