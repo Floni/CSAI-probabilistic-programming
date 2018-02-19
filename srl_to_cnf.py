@@ -8,8 +8,6 @@ import sympy
 
 from sympy.logic.boolalg import Not, And, Or, Equivalent, to_cnf
 
-
-
 def term_to_var_name(term):
     return term.functor + '_' + '_'.join(map(str, term.args))
 
@@ -44,8 +42,13 @@ def main():
     pl_file_name = args.pl_file
     cnf_file_name = args.cnf_file
 
-    grounded = subprocess.Popen(['problog', 'ground', pl_file_name],stdout=subprocess.PIPE)
-    grounded_str = grounded.stdout.read().decode()
+    #grounded = subprocess.Popen(['problog', 'ground', pl_file_name],stdout=subprocess.PIPE)
+    #grounded_str = grounded.stdout.read().decode()
+    grounded_str = ""
+
+    # TODO: first variable pass and then built clauses as order isn't preserved
+    with open(pl_file_name, "r") as f:
+        grounded_str = f.read()
 
     factory = problog.program.PrologFactory()
     parser = problog.parser.PrologParser(factory)
@@ -110,9 +113,15 @@ def main():
                 variables[name] = (sym, term.probability, curVarId)
                 curVarId += 1
                 disj.append(name)
-            disjunctions.append(disj)
+            disjunctions.append((disj, None))
 
         elif type(clause) is problog.logic.AnnotatedDisjunction:
+            # create variable for clause:
+            head_name = "temp_" + str(curVarId)
+            sym = sympy.symbols(head_name)
+            variables[head_name] = (sym, None, curVarId)
+            curVarId += 1
+
             # create var for each head:
             disj = []
             for head in clause.heads:
@@ -121,15 +130,21 @@ def main():
                 variables[name] = (sym, head.probability, curVarId)
                 curVarId += 1
                 disj.append(name)
-            disjunctions.append(disj)
+            disjunctions.append((disj, head_name))
 
             print("heads: ", disj)
 
             bodyf = parse_formula(variables, clause.body)
-            # add clause for each head:
-            for name in disj:
-                clauses[name] = [bodyf]
-
+            clauses[head_name] = [bodyf]
+        elif type(clause) is problog.logic.Term:
+            if clause.functor == "query" or clause.functor == "evidence":
+                # TODO
+                pass
+            else:
+                name = term_to_var_name(clause)
+                sym = sympy.symbols(name)
+                variables[name] = (sym, clause.probability, curVarId)
+                curVarId += 1
         print()
 
     print("varialbes: \t", variables)
@@ -139,10 +154,20 @@ def main():
 
     total = True
 
+    # TODO: if sum(prob) < 1 -> add variable to disjunction with remaining prob
     # generate disjunctions:
-    for disj in disjunctions:
+    for disj_tuple in disjunctions:
+        disj = disj_tuple[0]
+        head_name = disj_tuple[1]
+        head_sym = variables[head_name][0] if head_name is not None else None
+
         syms = [variables[x][0] for x in disj]
-        ors = Or(*syms)
+        # add head_name to a v b v c
+        ors = None
+        if head_name is not None:
+            ors = Or(*(syms + [~head_sym]))
+        else:
+            ors = Or(*syms)
 
         total &= ors
 
@@ -151,6 +176,11 @@ def main():
         for j in range(l):
             for i in range(j):
                 total &= ~syms[i] | ~syms[j]
+
+        # add clauses to make all false in case of head_name == false
+        if head_sym is not None:
+            for sym in syms:
+                total &= head_sym | ~sym
 
     # add clauses:
     for head_name in clauses:
@@ -173,13 +203,12 @@ def main():
     nclauses = len(cnf_clauses)
     nvariables = curVarId - 1 # starts at one
 
-    cnf_str = 'p cnf ' + str(nvariables) + ' ' + str(nclauses) + '\n'
+    cnf_str = ''
 
     for clause in cnf_clauses:
         lits = clause.args
         for lit in lits:
             name = ''
-            n = False
             if type(lit) is Not:
                 name = lit.args[0].name
                 cnf_str += '-'
@@ -190,10 +219,35 @@ def main():
 
         cnf_str += '0\n'
 
+    # weights:
+    weights = {} # var id to tuple (prob true, prob false)
+    for disj in disjunctions:
+        for var in disj[0]:
+            vtuple = variables[var]
+            weights[vtuple[2]] = (float(vtuple[1]), 1)
+
+    for var_name in variables:
+        vtuple = variables[var_name]
+        vid = vtuple[2]
+        if vid in weights:
+            continue # disjunction
+        prob = vtuple[1]
+        if prob is None:
+            weights[vid] = (1, 1)
+        else:
+            p = float(prob)
+            weights[vid] = (p, 1 - p)
+
+    weights_str = ''
+    for vid in weights:
+        weights_str += 'w ' + str(vid) + ' ' + str(weights[vid][0]) + ' ' + str(weights[vid][1]) + '\n'
+
     with open(cnf_file_name, 'w') as f:
         f.write('c ' + str(cnf_file_name) + '\n')
         f.write('c ' + str(pl_file_name) + '\n')
         f.write('c \n')
+        f.write('p cnf ' + str(nvariables) + ' ' + str(nclauses) + '\n')
+        f.write(weights_str)
         f.write(cnf_str)
 
     return 0
