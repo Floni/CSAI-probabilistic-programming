@@ -123,7 +123,7 @@ def main():
                 disj.append(name)
             disjunctions.append(disj)
 
-            print("heads: ", vars)
+            print("heads: ", disj)
 
             bodyf = parse_formula(variables, clause.body)
             # add clause for each head:
