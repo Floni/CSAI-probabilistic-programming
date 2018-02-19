@@ -6,6 +6,33 @@ import subprocess
 import problog
 import sympy
 
+from sympy.logic.boolalg import Not, And, Or, Equivalent, to_cnf
+
+
+
+def term_to_var_name(term):
+    return term.functor + '_' + '_'.join(map(str, term.args))
+
+
+def parse_formula(variables, formula):
+    if type(formula) is problog.logic.Term:
+        name = term_to_var_name(formula)
+        if name not in variables:
+            raise Exception("Unknown variable: " + name)
+        return variables[name][0] # symbol of varialble
+    elif type(formula) is problog.logic.And:
+        f1 = parse_formula(variables, formula.op1)
+        f2 = parse_formula(variables, formula.op2)
+        return f1 & f2
+    elif type(formula) is problog.logic.Or:
+        f1 = parse_formula(variables, formula.op1)
+        f2 = parse_formula(variables, formula.op2)
+        return f1 | f2
+    elif type(formula) is problog.logic.Not:
+        f1 = parse_formula(variables, formula.child)
+        return ~f1
+    else:
+        raise Exception("unknown formula: " + str(formula))
 
 def main():
     parser = argparse.ArgumentParser(description="srl to CNF")
@@ -24,10 +51,11 @@ def main():
     parser = problog.parser.PrologParser(factory)
     parsed = parser.parseString(grounded_str)
 
-    var = 'a'
-    formulas = []
-    idw = {}
-    nid = {}
+    clauses = {} # map of name to list of formulas, which need to be ored
+
+    disjunctions = [] # list of disjunctions: list of list of var names that are xor [['a1', 'a2'], ['b1', 'b2', 'b3']]
+    variables = {} # map of var_name to (sym, prob or None, id)
+    curVarId = 1
 
     for clause in parsed:
         print(type(clause))
@@ -36,70 +64,28 @@ def main():
         if type(clause) is problog.logic.Clause:
             head = clause.head
             print(head)
-            cvar = ""
-            key = str(head.functor) + str(head.args)
-            if nid.__contains__(key):
-                cvar = nid.get(key)
-            else:
-                cvar = var
-                nid[key] = var
-                var = chr(ord(var) + 1)
+            head_name = term_to_var_name(head)
 
             body = clause.body
             print(body)
             print(type(body))
 
-            bparts = [body]
-            conj = []
+            bform = parse_formula(variables, body)
 
-            if type(body) is problog.logic.Term:
-                #TODO: Add head body relationship
-                #TODO: handle not's
-                print("body is single term")
+            if head_name in clauses:
+                clauses[head_name].append(bform)
             else:
-                #conjunction
-                while len(bparts) > 0:
-                    cur_par = bparts.pop()
-                    e1 = cur_par.op1
-                    e2 = cur_par.op2
-
-                    if type(e1) is problog.logic.And:
-                        bparts.append(e1)
-                    else:
-                        # type must be term -> add to conjunction
-                        key = str(e1.functor) + str(e1.args)
-                        cvar = ""
-                        if nid.__contains__(key):
-                            cvar = nid[key]
-                        else:
-                            nid[key] = var
-                            cvar = var
-                            var = chr(ord(var) + 1)
-                        conj.append(sympy.symbols(cvar))
-
-                    if type(e2) is problog.logic.And:
-                        bparts.append(e2)
-                    else:
-                        # type must be term -> add to conjunction
-                        key = str(e2.functor) + str(e2.args)
-                        cvar = ""
-                        if nid.__contains__(key):
-                            cvar = nid[key]
-                        else:
-                            nid[key] = var
-                            cvar = var
-                            var = chr(ord(var) + 1)
-                        conj.append(sympy.symbols(cvar))
-
-                print(conj)
-
-            #Add head body relationship
-
+                sym = sympy.symbols(head_name)
+                variables[head_name] = (sym, head.probability, curVarId)
+                curVarId += 1
+                clauses[head_name] = [bform]
 
         elif type(clause) is problog.logic.Or:
             # disjunction with probabilities
             disj = []
             ors = [clause]
+            terms = []
+
             while len(ors) > 0:
                 cur_or = ors.pop()
                 e1 = cur_or.op1
@@ -108,33 +94,108 @@ def main():
                 if type(e1) is problog.logic.Or:
                     ors.append(e1)
                 else:
-                    # type must be term -> add to disjunction
-                    disj.append(sympy.symbols(var))
-                    idw[var] = e1.probability
-                    nid[str(e1.functor) + str(e1.args)] = var
-                    var = chr(ord(var) + 1)
+                    terms.append(e1)
 
                 if type(e2) is problog.logic.Or:
                     ors.append(e2)
                 else:
-                    # type must be term -> add to disjunction
-                    disj.append(sympy.symbols(var))
-                    idw[var] = e2.probability
-                    nid[str(e2.functor) + str(e2.args)] = var
-                    var = chr(ord(var) + 1)
+                    terms.append(e2)
 
-            #TODO: exclusive OR of all values of the variable in the disjunction (like enc1)
-            formula = sympy.Or(*disj)
-            formulas.append(formula)
+            print("terms: ", terms)
+
+            disj = []
+            for term in terms:
+                name = term_to_var_name(term)
+                sym = sympy.symbols(name)
+                variables[name] = (sym, term.probability, curVarId)
+                curVarId += 1
+                disj.append(name)
+            disjunctions.append(disj)
 
         elif type(clause) is problog.logic.AnnotatedDisjunction:
-            a = 1
+            # create var for each head:
+            disj = []
+            for head in clause.heads:
+                name = term_to_var_name(head)
+                sym = sympy.symbols(name)
+                variables[name] = (sym, head.probability, curVarId)
+                curVarId += 1
+                disj.append(name)
+            disjunctions.append(disj)
+
+            print("heads: ", vars)
+
+            bodyf = parse_formula(variables, clause.body)
+            # add clause for each head:
+            for name in disj:
+                clauses[name] = [bodyf]
 
         print()
 
-    print(nid)
-    print(idw)
-    print(formulas)
+    print("varialbes: \t", variables)
+    print("disjunctions: \t", disjunctions)
+    print("clauses: \t", clauses)
+    print()
+
+    total = True
+
+    # generate disjunctions:
+    for disj in disjunctions:
+        syms = [variables[x][0] for x in disj]
+        ors = Or(*syms)
+
+        total &= ors
+
+        l = len(syms)
+
+        for j in range(l):
+            for i in range(j):
+                total &= ~syms[i] | ~syms[j]
+
+    # add clauses:
+    for head_name in clauses:
+        bodies = clauses[head_name]
+        ors = Or(*bodies)
+        sym = variables[head_name][0]
+
+        total &= Equivalent(sym, ors)
+
+    print("total: ", total)
+    print()
+
+
+    cnf_total = to_cnf(total)
+    print("cnf: ", cnf_total)
+    print()
+
+    # to string:
+    cnf_clauses = list(cnf_total.args)
+    nclauses = len(cnf_clauses)
+    nvariables = curVarId - 1 # starts at one
+
+    cnf_str = 'p cnf ' + str(nvariables) + ' ' + str(nclauses) + '\n'
+
+    for clause in cnf_clauses:
+        lits = clause.args
+        for lit in lits:
+            name = ''
+            n = False
+            if type(lit) is Not:
+                name = lit.args[0].name
+                cnf_str += '-'
+            else:
+                name = lit.name
+            idv = variables[name][2]
+            cnf_str += str(idv) + ' '
+
+        cnf_str += '0\n'
+
+    with open(cnf_file_name, 'w') as f:
+        f.write('c ' + str(cnf_file_name) + '\n')
+        f.write('c ' + str(pl_file_name) + '\n')
+        f.write('c \n')
+        f.write(cnf_str)
+
     return 0
 
 
