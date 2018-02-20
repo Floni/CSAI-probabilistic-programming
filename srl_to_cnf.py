@@ -78,9 +78,10 @@ def main():
             if head_name in clauses:
                 clauses[head_name].append(bform)
             else:
-                sym = sympy.symbols(head_name)
-                variables[head_name] = (sym, head.probability, curVarId)
-                curVarId += 1
+                if head_name not in variables:
+                    sym = sympy.symbols(head_name)
+                    variables[head_name] = (sym, head.probability, curVarId)
+                    curVarId += 1
                 clauses[head_name] = [bform]
 
         elif type(clause) is problog.logic.Or:
@@ -154,12 +155,17 @@ def main():
 
     total = True
 
+    disj_names = set()
+
     # TODO: if sum(prob) < 1 -> add variable to disjunction with remaining prob
     # generate disjunctions:
     for disj_tuple in disjunctions:
         disj = disj_tuple[0]
         head_name = disj_tuple[1]
         head_sym = variables[head_name][0] if head_name is not None else None
+
+        for name in disj:
+            disj_names.add(name)
 
         syms = [variables[x][0] for x in disj]
         # add head_name to a v b v c
@@ -173,6 +179,7 @@ def main():
 
         l = len(syms)
 
+        # add clauses to assert that all syms are diffrent
         for j in range(l):
             for i in range(j):
                 total &= ~syms[i] | ~syms[j]
@@ -187,8 +194,10 @@ def main():
         bodies = clauses[head_name]
         ors = Or(*bodies)
         sym = variables[head_name][0]
-
-        total &= Equivalent(sym, ors)
+        if head_name in disj_names:
+            total &= ors >> sym
+        else:
+            total &= Equivalent(sym, ors)
 
     print("total: ", total)
     print()
