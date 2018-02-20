@@ -11,6 +11,18 @@ from sympy.logic.boolalg import Not, And, Or, Equivalent, to_cnf
 def term_to_var_name(term):
     return term.functor + '_' + '_'.join(map(str, term.args))
 
+curVarId = 1
+def create_var(name, prob=None):
+    global curVarId    
+    ret = (sympy.symbols(name), prob, curVarId)
+    curVarId += 1
+    return ret
+
+def add_clause(clauses, name, form):
+    if name in clauses:
+        clauses[name].append(form)
+    else:
+        clauses[name] = [form]
 
 def parse_formula(variables, formula):
     if type(formula) is problog.logic.Term:
@@ -58,7 +70,6 @@ def main():
 
     disjunctions = [] # list of disjunctions: list of list of var names that are xor [['a1', 'a2'], ['b1', 'b2', 'b3']]
     variables = {} # map of var_name to (sym, prob or None, id)
-    curVarId = 1
 
     for clause in parsed:
         print(type(clause))
@@ -79,9 +90,7 @@ def main():
                 clauses[head_name].append(bform)
             else:
                 if head_name not in variables:
-                    sym = sympy.symbols(head_name)
-                    variables[head_name] = (sym, head.probability, curVarId)
-                    curVarId += 1
+                    variables[head_name] = create_var(head_name, head.probability)
                 clauses[head_name] = [bform]
 
         elif type(clause) is problog.logic.Or:
@@ -110,26 +119,26 @@ def main():
             disj = []
             for term in terms:
                 name = term_to_var_name(term)
-                sym = sympy.symbols(name)
-                variables[name] = (sym, term.probability, curVarId)
-                curVarId += 1
+                name_alter = name + "_a"
+                variables[name] = create_var(name)
+                variables[name_alter] = create_var(name_alter, term.probability)
+                add_clause(clauses, name, variables[name_alter][0]) # equivalance between vars
                 disj.append(name)
             disjunctions.append((disj, None))
 
         elif type(clause) is problog.logic.AnnotatedDisjunction:
             # create variable for clause:
             head_name = "temp_" + str(curVarId)
-            sym = sympy.symbols(head_name)
-            variables[head_name] = (sym, None, curVarId)
-            curVarId += 1
+            variables[head_name] = create_var(head_name)
 
             # create var for each head:
             disj = []
             for head in clause.heads:
                 name = term_to_var_name(head)
-                sym = sympy.symbols(name)
-                variables[name] = (sym, head.probability, curVarId)
-                curVarId += 1
+                name_alter = name + "_a"
+                variables[name] = create_var(name)
+                variables[name_alter] = create_var(name_alter, head.probability)
+                add_clause(clauses, name, variables[name_alter][0])
                 disj.append(name)
             disjunctions.append((disj, head_name))
 
@@ -143,9 +152,15 @@ def main():
                 pass
             else:
                 name = term_to_var_name(clause)
-                sym = sympy.symbols(name)
-                variables[name] = (sym, clause.probability, curVarId)
-                curVarId += 1
+                prob = clause.probability
+                name_alter = name + "_a"
+                print(name, prob)
+                if prob is None:
+                    prob = 1.0
+                
+                variables[name] = create_var(name)
+                variables[name_alter] = create_var(name_alter, prob)
+                add_clause(clauses, name, variables[name_alter][0])
         print()
 
     print("varialbes: \t", variables)
@@ -155,8 +170,6 @@ def main():
 
     total = True
 
-    disj_names = set()
-
     # TODO: if sum(prob) < 1 -> add variable to disjunction with remaining prob
     # generate disjunctions:
     for disj_tuple in disjunctions:
@@ -164,10 +177,7 @@ def main():
         head_name = disj_tuple[1]
         head_sym = variables[head_name][0] if head_name is not None else None
 
-        for name in disj:
-            disj_names.add(name)
-
-        syms = [variables[x][0] for x in disj]
+        syms = [variables[x + "_a"][0] for x in disj]
         # add head_name to a v b v c
         ors = None
         if head_name is not None:
@@ -194,10 +204,7 @@ def main():
         bodies = clauses[head_name]
         ors = Or(*bodies)
         sym = variables[head_name][0]
-        if head_name in disj_names:
-            total &= ors >> sym
-        else:
-            total &= Equivalent(sym, ors)
+        total &= Equivalent(sym, ors)
 
     print("total: ", total)
     print()
@@ -232,7 +239,8 @@ def main():
     weights = {} # var id to tuple (prob true, prob false)
     for disj in disjunctions:
         for var in disj[0]:
-            vtuple = variables[var]
+            alter_name = var + "_a"
+            vtuple = variables[alter_name]
             weights[vtuple[2]] = (float(vtuple[1]), 1)
 
     for var_name in variables:
