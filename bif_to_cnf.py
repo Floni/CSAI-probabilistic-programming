@@ -4,42 +4,67 @@ import sys
 import argparse
 import itertools
 
+import sympy
+
 from deps.bif_parser import BIFParser as BIFP
 
+from sympy.logic.boolalg import Not, And, Or, Equivalent, Implies, to_cnf
 
-# variables are tuple: (node name, var state name)
-# conditional variables have an extra tuple: (node name, var state name, (conditional var 1, ...))
+# variables are tuple: (sympy var, node name, var state name)
+# conditional variables have an extra element:
+#   (sympy var, node name, var state name, (conditional var 1, ...))
 # for cnf: clauses are tuples (Boolean, variable)
 # with boolean == False <=> not(var)
 # and variable as defined above
 
+LATEX_NAMES = False
+
 def get_combinations(list_of_lists):
+    """
+        Returns all posible combinations of the given lists
+        used to create all conditional variables
+    """
     return itertools.product(*list_of_lists)
 
 def create_var(node, state):
-    return (node.getName(), state)
+    """
+        Creates a variable representing that the given node is in the given state
+    """
+    if LATEX_NAMES:
+        var_name = "\\lambda_{" + node.getName() + "\\_" + state  + "}"
+    else:
+        var_name = node.getName() + '_' + state
+    return (sympy.Symbol(var_name), node.getName(), state)
 
-def create_conditional_var(node, state, conds):
-    return (node.getName(), state, tuple(conds))
-
-def var_cnf(var, true=True):
-    return (true, var)
+def create_conditional_var(node, state, conds, parents):
+    """
+        Creates a conditional probability variable of the node in the given state
+        assumings all conds states of parents
+    """
+    if LATEX_NAMES:
+        cond_names = ",".join([b.getName() + "\\_" + a for a, b in zip(conds, parents)])
+        var_name = "\\theta_{" + node.getName() + "\\_" + state + "|" + cond_names+ "}"
+    else:
+        var_name = node.getName() + "_" + state + "|" + "_".join(conds)
+    return (sympy.Symbol(var_name), node.getName(), state, tuple(conds))
 
 def get_state_vars(node):
+    """ Creates all state variables of the given node """
     return [create_var(node, s) for s in node.getStates()]
 
 def get_all_cond_vars(node):
+    """ Creates all conditional state variables """
     cond_list = [node.getStates()]
-    for parent in node.getParents():
+    parents = node.getParents()
+    for parent in parents:
         cond_list.append(parent.getStates())
     pairs = get_combinations(cond_list)
-    return [create_conditional_var(node, p[0], p[1:]) for p in pairs]
+    return [create_conditional_var(node, p[0], p[1:], parents) for p in pairs]
 
 def create_variables(nodes, enc1):
-    variables = {}
-    nvars = 0
+    """ creates required all variables """
+    variables = []
     for node in nodes:
-        name = node.getName()
         states = node.getStates()
 
         # each state gets one variable
@@ -56,50 +81,35 @@ def create_variables(nodes, enc1):
             cond_list.append(parent.getStates())
 
         pairs = get_combinations(cond_list)
-        pvars = [create_conditional_var(node, p[0], p[1:]) for p in pairs]
+        pvars = [create_conditional_var(node, p[0], p[1:], parents) for p in pairs]
 
+        # add all variables
         for v in svars + pvars:
-            variables[v] = nvars + 1
-            nvars += 1
+            variables.append(v[0].name)
 
-    return variables, nvars
-
-def not_cnf(x):
-    """ Negates the given cnf variable """
-    return (not x[0], x[1])
-
-def notOfAnds(ands):
-    """ maps not_cnf to the given list of ands turning it into an or """
-    return [not_cnf(x) for x in ands]
-
-def convImplToCnf(left, right):
-    if len(right) > 1:
-        return [convImplToCnf(left, [r])[0] for r in right]
-    else:
-        return [notOfAnds(left) + right]
-
-def convEqToCnf(left, right):
-    impl1 = convImplToCnf(left, right)
-    impl2 = convImplToCnf(right, left)
-    return impl1 + impl2
-
+    return variables
 
 def create_indicator_cnf(node):
+    """ Creates the indicator clauses """
     cnf = []
     svars = get_state_vars(node)
     # the disjunction of all states:
-    cnf.append([var_cnf(v) for v in svars])
+    cnf.append(Or(*[s[0] for s in svars]))
 
     # negation:
     l = len(svars)
     for j in range(l):
         for i in range(j):
-            cnf.append([var_cnf(svars[i], False), var_cnf(svars[j], False)])
+            sa = svars[j][0]
+            sb = svars[i][0]
+            cnf.append(~sa | ~sb)
     return cnf
 
 
 def toEnc1(nodes):
+    """ Creates the ENC 1 encoding of the given nodes """
     cnf = []
+
     for node in nodes:
         cnf += create_indicator_cnf(node)
 
@@ -112,15 +122,19 @@ def toEnc1(nodes):
 
         nodes = [node] + parents
 
+        # create parameter clauses
         for pair in pairs:
-            rl = var_cnf(create_conditional_var(node, pair[0], pair[1:])) #name + '.cv.' + '|'.join(pair)
-            ll = [var_cnf(create_var(nodes[i], s)) for i, s in enumerate(pair)] # [pnames[i] + '.v.' + s for i, s in enumerate(pair)]
-            #print(convEqToCnf(ll, [rl]))
-            cnf += convEqToCnf(ll, [rl])
-    return cnf
+            par_var = create_conditional_var(node, pair[0], pair[1:], parents)
+
+            rl = par_var[0]
+            ll = And(*[create_var(nodes[i], s)[0] for i, s in enumerate(pair)])
+
+            cnf.append(Equivalent(ll, rl))
+    return And(*cnf)
 
 
 def toEnc2(nodes):
+    """ Creates the ENC 2 encoding of the given nodes """
     cnf = []
     for node in nodes:
         states = node.getStates()
@@ -128,37 +142,28 @@ def toEnc2(nodes):
         cnf += create_indicator_cnf(node)
 
         cond_list = [states]
-        for parent in node.getParents():
+        parents = node.getParents()
+        for parent in parents:
             cond_list.append(parent.getStates())
         pairs = itertools.product(*cond_list)
 
-        nodes = [node] + node.getParents()
+        nodes = [node] + parents
 
         for pair in pairs:
-            ll = [var_cnf(create_var(nodes[i+1], s)) for i, s in enumerate(pair[1:])]
-            ll += [var_cnf(create_conditional_var(node, s, pair[1:]), False) for s in states[:states.index(pair[0])]]
+            # pair[0] is the state of the node
+            # pair[1:] are the state of all conditionals
+            ll = [create_var(nodes[i+1], s)[0] for i, s in enumerate(pair[1:])]
+            ll += [~(create_conditional_var(node, s, pair[1:], parents)[0]) for s in states[:states.index(pair[0])]]
             if pair[0] != states[-1]:
-                ll += [var_cnf(create_conditional_var(node, pair[0], pair[1:]))]
+                ll += [create_conditional_var(node, pair[0], pair[1:], parents)[0]]
 
-            rl = var_cnf(create_var(node, pair[0]))
+            ll = And(*ll)
+
+            rl = create_var(node, pair[0])[0]
             #print(ll, '=>', rl)
-            cnf += convImplToCnf(ll, [rl])
+            cnf.append(Implies(ll, rl))
 
-    return cnf
-
-
-def cnfToInts(cnf, variables):
-    ret = ""
-    for conj in cnf:
-        line = ""
-        for disj in conj:
-            i = variables[disj[1]]
-            if not disj[0]:
-                i = -i
-            line += str(i) + " "
-        line += "0\n"
-        ret += line
-    return ret
+    return And(*cnf)
 
 def assign_weights_enc1(nodes):
     weights = {}
@@ -167,8 +172,9 @@ def assign_weights_enc1(nodes):
         cvars = get_all_cond_vars(node)
 
         for cvar in cvars:
-            prob = cpd[(cvar[1],) + cvar[2]]
-            weights[cvar] = prob
+            # cpd[state_of_node + state_of_conditionals]
+            prob = cpd[(cvar[2],) + cvar[3]]
+            weights[cvar[0].name] = prob
     return weights
 
 def assign_weights_enc2(nodes):
@@ -179,99 +185,94 @@ def assign_weights_enc2(nodes):
         cvars = get_all_cond_vars(node)
 
         for cvar in cvars:
-            prob = cpd[(cvar[1],) + cvar[2]]
+            prob = cpd[(cvar[2],) + cvar[3]]
             # index of state
-            idx = states.index(cvar[1])
+            idx = states.index(cvar[2])
             divisor = 1
             for i in range(idx):
-                divisor -= cpd[(states[i],) + cvar[2]]
-
-            weights[cvar] = prob / divisor
+                divisor -= cpd[(states[i],) + cvar[3]]
+            # TODO: 0 or 1 if divisor == 0
+            weights[cvar[0].name] = prob / divisor if divisor > 0 else 0
     return weights
 
-def weights_to_str(weights, variables, enc1, c2d):
+def weights_to_dict(weights, variables, enc1):
     ws = {}
     for var in variables:
         if var in weights:
             weight = weights[var]
-            ws[variables[var]] = (weight, 1 if enc1 else (1 - weight))
+            ws[var] = (weight, 1 if enc1 else (1 - weight))
         else:
-            ws[variables[var]] = (1, 1)
+            ws[var] = (1, 1)
+    return ws
 
-    wline = ""
-    if c2d:
-        wline += "c weights"
-        for i in range(len(variables)):
-            wline += " " + str(ws[i+1][0]) + " " + str(ws[i+1][1])
-        wline += '\n'
+
+def latex_print(s):
+    if type(s) is And:
+        return " \\wedge ".join([latex_print(a) for a in s.args])
+    elif type(s) is Or:
+        return " \\vee ".join([latex_print(a) for a in s.args])
+    elif type(s) is Equivalent:
+        return latex_print(s.args[0]) + " \\Leftrightarrow " + latex_print(s.args[1])
+    elif type(s) is Implies:
+        return latex_print(s.args[0]) + " \\Rightarrow " + latex_print(s.args[1])
+    elif type(s) is Not:
+        return " \\neg " + latex_print(s.args[0])
     else:
-        for i in range(len(variables)):
-            wline += "w " + str(i+1) + " " + str(ws[i+1][0]) + " " + str(ws[i+1][1]) +  "\n"
-    return wline
+        return s.name
 
-def main():
-    parser = argparse.ArgumentParser(description="Convert a baysean network to CNF")
-    parser.add_argument("--enc", "-e", default=1, type=int)
-    parser.add_argument("--cnf-type", default="c2d", type=str)
-    parser.add_argument("bif_file")
-    parser.add_argument("cnf_file")
-
-    args = parser.parse_args()
-
-    bif_file_name = args.bif_file
-    cnf_file_name = args.cnf_file
-
-    enc1 = args.enc == 1
-    cnf_type = args.cnf_type
-
+def parse_bif(contents, enc1, verbose):
     nodes = None
-    with open(bif_file_name, "r") as f:
-        bif_w = f.readlines()
-        bif = BIFP.fixWhiteSpace(bif_w)
-        nodes = BIFP.parseBIF(bif)
+
+    bif_w = contents.splitlines()
+    bif = BIFP.fixWhiteSpace(bif_w)
+    nodes = BIFP.parseBIF(bif)
 
     if nodes is None:
         print("error parsing bif")
         return -1
 
-    print(">bif info:")
-    for n in nodes:
-        n.printNode()
+    if verbose:
+        print(">bif info:")
+        for n in nodes:
+            n.printNode()
 
     # create variables
     # map from name to int
-    variables, nvars = create_variables(nodes, enc1)
+    variables = create_variables(nodes, enc1)
 
-    print("variables:")
-    for v in variables:
-        print(v, "=", variables[v])
+    if verbose:
+        print("variables:")
+        for v in variables:
+            print(v)
 
     # create cnf
     cnf = toEnc1(nodes) if enc1 else toEnc2(nodes)
 
-    print("cnf:")
-    for c in cnf:
-        print(c)
+    if verbose:
+        print("enc:")
+        clauses = cnf.args
+        for clause in clauses:
+            p = "$ "
+
+            p += latex_print(clause)
+
+            p += " $"
+            print(p)
+            print()
+
+    cnf = to_cnf(cnf)
+
+    if verbose:
+        print("cnf:")
+        print(cnf)
 
     # assign weights
     weights = assign_weights_enc1(nodes) if enc1 else assign_weights_enc2(nodes)
 
-    print("weights:")
-    print(weights)
-    # save cnf
+    if verbose:
+        print("weights:")
+        keys = weights.keys()
+        for key in keys:
+            print("$ " + key + " $ & " + str(weights[key]) + " \\\\")
 
-    with open(cnf_file_name, "w") as f:
-        f.write("c " + cnf_file_name + "\n")
-        f.write("c " + bif_file_name + "\n")
-        f.write("c\n")
-
-        f.write("p cnf " + str(nvars) + " " + str(len(cnf)) + "\n")
-
-        wline = weights_to_str(weights, variables, enc1, cnf_type == "c2d")
-        f.write(wline)
-        f.write(cnfToInts(cnf, variables))
-    return 0
-
-
-if __name__ == '__main__':
-    sys.exit(main())
+    return variables, cnf, weights_to_dict(weights, variables, enc1)

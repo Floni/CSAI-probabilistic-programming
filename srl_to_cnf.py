@@ -8,15 +8,23 @@ import sympy
 
 from sympy.logic.boolalg import Not, And, Or, Equivalent, to_cnf
 
+variables = {}
+
 def term_to_var_name(term):
     return term.functor + '_' + '_'.join(map(str, term.args))
 
 curVarId = 1
-def create_var(name, prob=None):
-    global curVarId    
-    ret = (sympy.symbols(name), prob, curVarId)
-    curVarId += 1
-    return ret
+def get_var(name, prob=None):
+    global curVarId
+    if name in variables:
+        if prob is not None:
+            variables[name] = (variables[name][0], prob)
+        return variables[name]
+    else:
+        ret = (sympy.Symbol(name), prob)
+        variables[name] = ret
+        curVarId += 1
+        return ret
 
 def add_clause(clauses, name, form):
     if name in clauses:
@@ -24,43 +32,33 @@ def add_clause(clauses, name, form):
     else:
         clauses[name] = [form]
 
-def parse_formula(variables, formula):
+def parse_formula(formula):
     if type(formula) is problog.logic.Term:
         name = term_to_var_name(formula)
-        if name not in variables:
-            raise Exception("Unknown variable: " + name)
-        return variables[name][0] # symbol of varialble
+        return get_var(name)[0]
     elif type(formula) is problog.logic.And:
-        f1 = parse_formula(variables, formula.op1)
-        f2 = parse_formula(variables, formula.op2)
+        f1 = parse_formula(formula.op1)
+        f2 = parse_formula(formula.op2)
         return f1 & f2
     elif type(formula) is problog.logic.Or:
-        f1 = parse_formula(variables, formula.op1)
-        f2 = parse_formula(variables, formula.op2)
+        f1 = parse_formula(formula.op1)
+        f2 = parse_formula(formula.op2)
         return f1 | f2
     elif type(formula) is problog.logic.Not:
-        f1 = parse_formula(variables, formula.child)
+        f1 = parse_formula(formula.child)
         return ~f1
     else:
         raise Exception("unknown formula: " + str(formula))
 
-def main():
-    parser = argparse.ArgumentParser(description="srl to CNF")
-    parser.add_argument("pl_file")
-    parser.add_argument("cnf_file")
-
-    args = parser.parse_args()
-
-    pl_file_name = args.pl_file
-    cnf_file_name = args.cnf_file
-
-    #grounded = subprocess.Popen(['problog', 'ground', pl_file_name],stdout=subprocess.PIPE)
-    #grounded_str = grounded.stdout.read().decode()
-    grounded_str = ""
+def parse_srl(contents, verbose):
+    grounded = subprocess.run(['problog', 'ground', '-'],
+        stdout=subprocess.PIPE, input=contents.encode())
+    grounded_str = grounded.stdout.decode()
+    #grounded_str = ""
 
     # TODO: first variable pass and then built clauses as order isn't preserved
-    with open(pl_file_name, "r") as f:
-        grounded_str = f.read()
+    #with open(pl_file_name, "r") as f:
+    #    grounded_str = f.read()
 
     factory = problog.program.PrologFactory()
     parser = problog.parser.PrologParser(factory)
@@ -69,28 +67,33 @@ def main():
     clauses = {} # map of name to list of formulas, which need to be ored
 
     disjunctions = [] # list of disjunctions: list of list of var names that are xor [['a1', 'a2'], ['b1', 'b2', 'b3']]
-    variables = {} # map of var_name to (sym, prob or None, id)
+
+    evidence = [] # list of evidence (var_name, evidence = true or false)
+    queries = [] # list of variables to query
 
     for clause in parsed:
-        print(type(clause))
-        print(clause)
+        if verbose:
+            print(type(clause))
+            print(clause)
 
         if type(clause) is problog.logic.Clause:
             head = clause.head
-            print(head)
+            if verbose:
+                print(head)
             head_name = term_to_var_name(head)
 
             body = clause.body
-            print(body)
-            print(type(body))
+            if verbose:
+                print(body)
+                print(type(body))
 
-            bform = parse_formula(variables, body)
+            bform = parse_formula(body)
 
             if head_name in clauses:
                 clauses[head_name].append(bform)
             else:
                 if head_name not in variables:
-                    variables[head_name] = create_var(head_name, head.probability)
+                    get_var(head_name, head.probability)
                 clauses[head_name] = [bform]
 
         elif type(clause) is problog.logic.Or:
@@ -114,14 +117,15 @@ def main():
                 else:
                     terms.append(e2)
 
-            print("terms: ", terms)
+            if verbose:
+                print("terms: ", terms)
 
             disj = []
             for term in terms:
                 name = term_to_var_name(term)
                 name_alter = name + "_a"
-                variables[name] = create_var(name)
-                variables[name_alter] = create_var(name_alter, term.probability)
+                get_var(name)
+                get_var(name_alter, term.probability)
                 add_clause(clauses, name, variables[name_alter][0]) # equivalance between vars
                 disj.append(name)
             disjunctions.append((disj, None))
@@ -129,44 +133,56 @@ def main():
         elif type(clause) is problog.logic.AnnotatedDisjunction:
             # create variable for clause:
             head_name = "temp_" + str(curVarId)
-            variables[head_name] = create_var(head_name)
+            get_var(head_name)
 
             # create var for each head:
             disj = []
             for head in clause.heads:
                 name = term_to_var_name(head)
                 name_alter = name + "_a"
-                variables[name] = create_var(name)
-                variables[name_alter] = create_var(name_alter, head.probability)
+                get_var(name)
+                get_var(name_alter, head.probability)
                 add_clause(clauses, name, variables[name_alter][0])
                 disj.append(name)
             disjunctions.append((disj, head_name))
 
-            print("heads: ", disj)
+            if verbose:
+                print("heads: ", disj)
 
-            bodyf = parse_formula(variables, clause.body)
+            bodyf = parse_formula(clause.body)
             clauses[head_name] = [bodyf]
         elif type(clause) is problog.logic.Term:
-            if clause.functor == "query" or clause.functor == "evidence":
-                # TODO
-                pass
+            if clause.functor == "query":
+                queries.append(term_to_var_name(clause.args[0]))
+            elif clause.functor == "evidence":
+                func = clause.args[0]
+                if func.functor == '\\+':
+                    evidence.append((term_to_var_name(func.args[0]), False))
+                else:
+                    evidence.append((term_to_var_name(func), True))
             else:
                 name = term_to_var_name(clause)
                 prob = clause.probability
                 name_alter = name + "_a"
-                print(name, prob)
+                if verbose:
+                    print(name, prob)
+
                 if prob is None:
                     prob = 1.0
-                
-                variables[name] = create_var(name)
-                variables[name_alter] = create_var(name_alter, prob)
-                add_clause(clauses, name, variables[name_alter][0])
-        print()
 
-    print("varialbes: \t", variables)
-    print("disjunctions: \t", disjunctions)
-    print("clauses: \t", clauses)
-    print()
+                get_var(name)
+                get_var(name_alter, prob)
+                add_clause(clauses, name, variables[name_alter][0])
+        if verbose:
+            print()
+
+    if verbose:
+        print("varialbes: \t", variables)
+        print("disjunctions: \t", disjunctions)
+        print("clauses: \t", clauses)
+        print("evidence: \t", evidence)
+        print("queries: \t", queries)
+        print()
 
     total = True
 
@@ -206,69 +222,36 @@ def main():
         sym = variables[head_name][0]
         total &= Equivalent(sym, ors)
 
-    print("total: ", total)
-    print()
+    if verbose:
+        print("total: ", total)
+        print()
 
 
     cnf_total = to_cnf(total)
-    print("cnf: ", cnf_total)
-    print()
-
-    # to string:
-    cnf_clauses = list(cnf_total.args)
-    nclauses = len(cnf_clauses)
-    nvariables = curVarId - 1 # starts at one
-
-    cnf_str = ''
-
-    for clause in cnf_clauses:
-        lits = clause.args
-        for lit in lits:
-            name = ''
-            if type(lit) is Not:
-                name = lit.args[0].name
-                cnf_str += '-'
-            else:
-                name = lit.name
-            idv = variables[name][2]
-            cnf_str += str(idv) + ' '
-
-        cnf_str += '0\n'
+    if verbose:
+        print("cnf: ", cnf_total)
+        print()
 
     # weights:
-    weights = {} # var id to tuple (prob true, prob false)
+    weights = {} # var name to tuple (prob true, prob false)
+
     for disj in disjunctions:
         for var in disj[0]:
             alter_name = var + "_a"
             vtuple = variables[alter_name]
-            weights[vtuple[2]] = (float(vtuple[1]), 1)
+            weights[alter_name] = (float(vtuple[1]), 1)
 
     for var_name in variables:
         vtuple = variables[var_name]
-        vid = vtuple[2]
-        if vid in weights:
+        if var_name in weights:
             continue # disjunction
+
         prob = vtuple[1]
         if prob is None:
-            weights[vid] = (1, 1)
+            weights[var_name] = (1, 1)
         else:
             p = float(prob)
-            weights[vid] = (p, 1 - p)
+            weights[var_name] = (p, 1 - p)
 
-    weights_str = ''
-    for vid in weights:
-        weights_str += 'w ' + str(vid) + ' ' + str(weights[vid][0]) + ' ' + str(weights[vid][1]) + '\n'
-
-    with open(cnf_file_name, 'w') as f:
-        f.write('c ' + str(cnf_file_name) + '\n')
-        f.write('c ' + str(pl_file_name) + '\n')
-        f.write('c \n')
-        f.write('p cnf ' + str(nvariables) + ' ' + str(nclauses) + '\n')
-        f.write(weights_str)
-        f.write(cnf_str)
-
-    return 0
-
-
-if __name__ == '__main__':
-    sys.exit(main())
+    vars = list(variables.keys())
+    return vars, cnf_total, weights, evidence, queries
