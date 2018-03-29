@@ -4,7 +4,9 @@ import sys
 import argparse
 import subprocess
 
-from bif_to_cnf import parse_bif
+import time
+
+from bif_to_cnf import parse_bif #, latex_print
 from srl_to_cnf import parse_srl
 
 from sympy.logic.boolalg import Not
@@ -104,10 +106,22 @@ def main():
     evidence = None
     queries = None
 
+    start_time = time.time()
+
     if is_bif:
-        variables, cnf, weights = parse_bif(contents, enc1, verbose)
+        variables, cnf, weights, queries = parse_bif(contents, enc1, verbose)
     else:
         variables, cnf, weights, evidence, queries = parse_srl(contents, verbose)
+
+    cnf_time = time.time()
+
+#    if verbose:
+#        print("cnf latex:")
+#        print(len(cnf.args))
+#        clauses = cnf.args
+#        for clause in clauses:
+#            print("$", latex_print(clause), "$")
+#            print()
 
     ints = cnf_to_ints(cnf, variables)
 
@@ -120,21 +134,31 @@ def main():
 
     save_cnf(args.cnf_file, ints, variables, weights, c2d)
 
+    vtree_time = None
+
     if c2d:
         vtree_name = args.cnf_file + ".vtree"
         print("miniC2D:")
         minic2d = subprocess.run(
-            ['../miniC2D-1.0.0/bin/linux/miniC2D', '-c', args.cnf_file, '-o', vtree_name])
+            [MINIC2D_PATH, '-c', args.cnf_file, '-o', vtree_name])
 
         if minic2d.returncode != 0:
             print("error creating vtree")
             return -1
 
+        vtree_time = time.time()
 
-        print("calculating probabilities")
+        print("calculating sdd")
         vtree = Vtree.from_file(vtree_name.encode())
         sdd = SddManager.from_vtree(vtree)
         root = sdd.read_cnf_file(args.cnf_file.encode())
+
+        print("sdd node count:", sdd.count())
+        print("sdd size:", sdd.size())
+        if verbose:
+            sdd.print_stdout()
+
+        print()
 
         wmc = root.wmc(log_mode=False)
         w = wmc.propagate()
@@ -151,12 +175,25 @@ def main():
             wmc.set_literal_weight(sdd.literal(-i), w_neg)
         w = wmc.propagate()
         print("weighted count:", w)
+        print()
+        print("queries:")
         if queries is not None:
             for query in queries:
                 idx = variables.index(query)+1
                 pr = wmc.literal_pr(sdd.literal(idx))
-                print("P(", query, ")=", pr)
+                print("P(", query, ") =\t", pr)
 
+
+    end_time = time.time()
+
+    print()
+    print("cnf variables:", len(variables), "clauses: ", len(ints))
+    print()
+    print("total time:\t", end_time - start_time)
+    print("cnf time:\t", cnf_time - start_time)
+    if vtree_time is not None:
+        print("vtree time:\t", vtree_time - cnf_time)
+        print("count time:\t", end_time - vtree_time)
 
     return 0
 

@@ -64,6 +64,7 @@ def get_all_cond_vars(node):
 def create_variables(nodes, enc1):
     """ creates required all variables """
     variables = []
+    queries = []
     for node in nodes:
         states = node.getStates()
 
@@ -83,11 +84,14 @@ def create_variables(nodes, enc1):
         pairs = get_combinations(cond_list)
         pvars = [create_conditional_var(node, p[0], p[1:], parents) for p in pairs]
 
+        for v in svars:
+            queries.append(v[0].name)
+
         # add all variables
         for v in svars + pvars:
             variables.append(v[0].name)
 
-    return variables
+    return variables, queries
 
 def create_indicator_cnf(node):
     """ Creates the indicator clauses """
@@ -238,7 +242,7 @@ def parse_bif(contents, enc1, verbose):
 
     # create variables
     # map from name to int
-    variables = create_variables(nodes, enc1)
+    variables, queries = create_variables(nodes, enc1)
 
     if verbose:
         print("variables:")
@@ -268,11 +272,12 @@ def parse_bif(contents, enc1, verbose):
 
     # assign weights
     weights = assign_weights_enc1(nodes) if enc1 else assign_weights_enc2(nodes)
+    weights = weights_to_dict(weights, variables, enc1)
 
-    if verbose:
-        print("weights:")
-        keys = weights.keys()
-        for key in keys:
-            print("$ " + key + " $ & " + str(weights[key]) + " \\\\")
+#    if verbose:
+#        print("weights:")
+#        keys = weights.keys()
+#        for key in keys:
+#            print("$ " + key + " $ & " + str(weights[key][0])  + "&" + str(weights[key][1]) + " \\\\")
 
-    return variables, cnf, weights_to_dict(weights, variables, enc1)
+    return variables, cnf, weights, queries

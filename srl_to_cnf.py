@@ -89,11 +89,17 @@ def parse_srl(contents, verbose):
 
             bform = parse_formula(body)
 
+            # handle probability
+            if head.probability is not None:
+                temp_name = head_name + "_p" + str(curVarId)
+                v = get_var(temp_name, head.probability)
+                bform &= v[0]
+
             if head_name in clauses:
                 clauses[head_name].append(bform)
             else:
                 if head_name not in variables:
-                    get_var(head_name, head.probability)
+                    get_var(head_name, None) # No probability, handled above
                 clauses[head_name] = [bform]
 
         elif type(clause) is problog.logic.Or:
@@ -123,11 +129,11 @@ def parse_srl(contents, verbose):
             disj = []
             for term in terms:
                 name = term_to_var_name(term)
-                name_alter = name + "_a"
+                name_alter = name + "_a" + str(curVarId)
                 get_var(name)
                 get_var(name_alter, term.probability)
                 add_clause(clauses, name, variables[name_alter][0]) # equivalance between vars
-                disj.append(name)
+                disj.append((name, name_alter))
             disjunctions.append((disj, None))
 
         elif type(clause) is problog.logic.AnnotatedDisjunction:
@@ -135,15 +141,24 @@ def parse_srl(contents, verbose):
             head_name = "temp_" + str(curVarId)
             get_var(head_name)
 
+            sum_prob = 0
             # create var for each head:
             disj = []
             for head in clause.heads:
                 name = term_to_var_name(head)
-                name_alter = name + "_a"
+                name_alter = name + "_a" + str(curVarId)
                 get_var(name)
                 get_var(name_alter, head.probability)
                 add_clause(clauses, name, variables[name_alter][0])
-                disj.append(name)
+                disj.append((name, name_alter))
+                sum_prob += float(head.probability)
+
+            if sum_prob < 1:
+                rest = 1 - sum_prob
+                name = "temp_" + str(curVarId)
+                get_var(name, rest)
+                disj.append((None, name))
+
             disjunctions.append((disj, head_name))
 
             if verbose:
@@ -163,7 +178,8 @@ def parse_srl(contents, verbose):
             else:
                 name = term_to_var_name(clause)
                 prob = clause.probability
-                name_alter = name + "_a"
+                name_alter = name + "_a" + str(curVarId)
+
                 if verbose:
                     print(name, prob)
 
@@ -186,14 +202,13 @@ def parse_srl(contents, verbose):
 
     total = True
 
-    # TODO: if sum(prob) < 1 -> add variable to disjunction with remaining prob
     # generate disjunctions:
     for disj_tuple in disjunctions:
         disj = disj_tuple[0]
         head_name = disj_tuple[1]
         head_sym = variables[head_name][0] if head_name is not None else None
 
-        syms = [variables[x + "_a"][0] for x in disj]
+        syms = [variables[x[1]][0] for x in disj]
         # add head_name to a v b v c
         ors = None
         if head_name is not None:
@@ -237,7 +252,7 @@ def parse_srl(contents, verbose):
 
     for disj in disjunctions:
         for var in disj[0]:
-            alter_name = var + "_a"
+            alter_name = var[1]
             vtuple = variables[alter_name]
             weights[alter_name] = (float(vtuple[1]), 1)
 
